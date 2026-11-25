@@ -35,7 +35,7 @@ class Setup(object):
         parser.add_argument('--build_qemu', type=str,
                 choices=['evaluation', 'fuzz_with_asan', 'fuzz_without_asan', 'coverage', 'upstream', 'all'])
         parser.add_argument('--build_llvm', action='store_true')
-        parser.add_argument('--build_linux', type=str, choices=['allmod_v6.6'])
+        parser.add_argument('--build_linux', type=str, choices=['allmod_v7.3'])
         parser.add_argument('--build_analyzer', action='store_true')
         parser.add_argument('--analyze', type=str, default=None)
         parser.add_argument('--clean_build', action='store_true')
@@ -70,7 +70,7 @@ class Setup(object):
             self.components.append(self._build_protobuf)
             self.components.append(self._build_lib)
             self.components.append([self._build_qemu, 'all'])
-            self.components.append([self._build_linux, 'allmod_v6.6'])
+            self.components.append([self._build_linux, 'allmod_v7.3'])
             self.components.append(self._build_analyzer)
 
     def _run_cmd(self, cmd):

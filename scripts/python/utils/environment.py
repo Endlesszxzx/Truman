@@ -64,7 +64,7 @@ def get_env():
     env.build_llvm_dir = env.build_dir / 'llvm'
     env.build_llvm_dir.mkdir(parents=True, exist_ok=True)
     env.build_linux_dir = env.build_dir / 'linux'
-    env.build_linux_allmod_dir = env.build_linux_dir / 'allmod_v6.6'
+    env.build_linux_allmod_dir = env.build_linux_dir / 'allmod_v7.3'
     env.build_linux_fuzz_dir = env.build_linux_dir / 'fuzz'
     env.build_static_analysis_dir = env.build_dir / 'static_analysis'
     env.build_static_analysis_analyzer_lib = env.build_static_analysis_dir / 'Analyzer/libAnalyzer.so'
