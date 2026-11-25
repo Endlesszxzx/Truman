@@ -20,6 +20,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/IRReader/IRReader.h"
 #include "MSSA/SVFGBuilder.h"
 #include "SVF-FE/LLVMModule.h"
@@ -260,8 +261,8 @@ YAML::Emitter& operator << (YAML::Emitter& out, struct DeviceInfo device_info) {
 	return out;
 }
 
-static cl::opt<std::string> result_bin("result", cl::desc("result file"), cl::value_desc("result file"), cl::init("result.bin"));
-static cl::opt<std::string> target("target", cl::desc("target device"), cl::value_desc("target device"), cl::init("target"));
+static llvm::cl::opt<std::string> result_bin("result", llvm::cl::desc("result file"), llvm::cl::value_desc("result file"), llvm::cl::init("result.bin"));
+static llvm::cl::opt<std::string> target("target", llvm::cl::desc("target device"), llvm::cl::value_desc("target device"), llvm::cl::init("target"));
 
 void DMAAnalysisPass::printAliasPoints() {
     for (const auto &func_map : device_info_.func_pa_results) {
@@ -283,7 +284,7 @@ void DMAAnalysisPass::printAliasPoints() {
 }
 
 bool DMAAnalysisPass::runOnModule(llvm::Module &M) {
-	device_info_ = getAnalysis<DMATaintResult>().getResult();
+	device_info_ = getAnalysis<DMAResult>().getResult();
 	device_info_.bc_module = &M;
 	device_info_.device_name = target;
 	module_ = &M;
@@ -314,10 +315,8 @@ bool DMAAnalysisPass::runOnModule(llvm::Module &M) {
 
 void DMAAnalysisPass::getAnalysisUsage(llvm::AnalysisUsage &AU) const {
 	AU.setPreservesAll();
-	AU.addRequired<DMATaintResult>();
 	AU.addRequired<DMAResult>();
 	AU.addRequired<DMAPass>();
-	AU.addRequired<AnalysisPass>();
 }
 
 void DMAAnalysisPass::Analyze() {
@@ -1278,11 +1277,11 @@ llvm::Function* DMAAnalysisPass::FindPCIProbe() {
 		}
 	}
 	if (driver_struct->getNumOperands() > 14) {
-		auto *device_driver = llvm::dyn_cast<ConstantStruct>(driver_struct->getAggregateElement(14));
+		auto *device_driver = llvm::dyn_cast<llvm::ConstantStruct>(driver_struct->getAggregateElement(14));
 		if (device_driver) {
 			device_driver->getAggregateElement(16);
-			auto *pm_constant = llvm::dyn_cast<Constant>(device_driver->getAggregateElement(16));
-			auto *pm_struct = llvm::dyn_cast<ConstantStruct>(pm_constant->getOperand(0));
+			auto *pm_constant = llvm::dyn_cast<llvm::Constant>(device_driver->getAggregateElement(16));
+			auto *pm_struct = llvm::dyn_cast<llvm::ConstantStruct>(pm_constant->getOperand(0));
 			if (pm_struct) {
 				for (const auto &op: pm_struct->operands()) {
 					auto *func = llvm::dyn_cast<llvm::Function>(op);
@@ -1408,12 +1407,12 @@ IntraDepNodePtr DMAAnalysisPass::GetRegValue(llvm::Value *value) {
 		bool flag = false;
 
         switch (inst->getOpcode()) {
-			case Instruction::Add:
-			case Instruction::Alloca:
-			case Instruction::GetElementPtr:
+			case llvm::Instruction::Add:
+			case llvm::Instruction::Alloca:
+			case llvm::Instruction::GetElementPtr:
 				SPDLOG_INFO("{}: Do not care inst: {}", __FUNCTION__, LLVMPrint(inst));
 				break;
-            case Instruction::Call:
+            case llvm::Instruction::Call:
                 root->node_value_type = IntraDepNodeValueType::k_NODE_VALUE_CALL;
 				op_id = FindOpid(inst);
 				if (op_id != -1) {
@@ -1423,42 +1422,42 @@ IntraDepNodePtr DMAAnalysisPass::GetRegValue(llvm::Value *value) {
 					root->node_value_type = IntraDepNodeValueType::k_NODE_VALUE_NUM_TYPE;
 				}
                 break;
-            case Instruction::Or:
+            case llvm::Instruction::Or:
                 root->node_value_type = IntraDepNodeValueType::k_NODE_VALUE_OR;
                 for (auto &user : inst->operands()) {
 					node_ptr = GetRegValue(user);
 					root->addChild(std::move(node_ptr));
                 }
                 break;
-            case Instruction::And:
+            case llvm::Instruction::And:
                 root->node_value_type = IntraDepNodeValueType::k_NODE_VALUE_AND;
                 for (auto &user : inst->operands()) {
 					node_ptr = GetRegValue(user);
 					root->addChild(std::move(node_ptr));
                 }
                 break;
-            case Instruction::Shl:
+            case llvm::Instruction::Shl:
                 root->node_value_type = IntraDepNodeValueType::k_NODE_VALUE_SHL;
                 for (auto &user : inst->operands()) {
 					node_ptr = GetRegValue(user);
 					root->addChild(std::move(node_ptr));
                 }
                 break;
-            case Instruction::LShr:
+            case llvm::Instruction::LShr:
                 root->node_value_type = IntraDepNodeValueType::k_NODE_VALUE_LSHR;
                 for (auto &user : inst->operands()) {
 					node_ptr = GetRegValue(user);
 					root->addChild(std::move(node_ptr));
                 }
                 break;
-			case Instruction::PHI:
+			case llvm::Instruction::PHI:
                 root->node_value_type = IntraDepNodeValueType::k_NODE_VALUE_PHI;
                 for (auto &user : inst->operands()) {
 					node_ptr = GetRegValue(user);
 					root->addChild(std::move(node_ptr));
                 }
                 break;
-			case Instruction::Select:
+			case llvm::Instruction::Select:
                 root->node_value_type = IntraDepNodeValueType::k_NODE_VALUE_SELECT;
 				for (auto user = inst->op_begin() + 1; user != inst->op_end(); ++user) {
 					node_ptr = GetRegValue(llvm::dyn_cast<llvm::Value>(user));

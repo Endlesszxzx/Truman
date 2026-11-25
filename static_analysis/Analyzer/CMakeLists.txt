@@ -50,6 +50,25 @@ file(GLOB SAA_SRCS
 # Message for debugging
 message(STATUS "Source files: ${SAA_SRCS}")
 
+# DBM-only target: keep the resource pass, DBM analysis/serializer, and schema.
+# The DBM pass consumes DMAResult directly and does not compile the taint,
+# visitor, or bug-detector implementation.
+set(DBM_SRCS
+    "src/DMAResult.cpp"
+    "src/dma.cpp"
+    "src/dma_analysis.cpp"
+)
+add_library(AnalyzerDBM MODULE ${DBM_SRCS} ${PROTO_SRCS})
+target_link_libraries(AnalyzerDBM
+    ${SVF_LIB}
+    spdlog::spdlog
+    yaml-cpp::yaml-cpp
+    ${Z3_LIB}
+    protobuf::libprotobuf
+)
+target_compile_features(AnalyzerDBM PRIVATE cxx_std_17)
+set_target_properties(AnalyzerDBM PROPERTIES COMPILE_FLAGS "-g -fno-rtti")
+
 # Add libraries
 add_library(Analyzer MODULE ${SAA_SRCS} ${PROTO_SRCS})
 add_library(AnalyzerStatic STATIC ${SAA_SRCS} ${PROTO_SRCS})

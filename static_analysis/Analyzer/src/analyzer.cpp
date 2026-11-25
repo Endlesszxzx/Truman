@@ -14,6 +14,7 @@
 
 #include "analysis.h"
 #include "dma.h"
+#include "LegacyTaintResult.h"
 #include "CFGUtils.h"
 #include "DMAAnalysisVisitor.h"
 #include "InstructionUtils.h"

@@ -20,21 +20,3 @@ public:
 private:
 	DeviceInfo result;
 };
-
-using dma_taint_result = std::set<llvm::Instruction *>;
-
-class DMATaintResult: public llvm::ImmutablePass {
-public:
-	static char ID;
-	DMATaintResult(): llvm::ImmutablePass(ID) {}
-
-	void setResult(DeviceInfo res) {
-		result = res;
-	}
-	DeviceInfo getResult() const {
-		return result;
-	}
-
-private:
-	DeviceInfo result;
-};

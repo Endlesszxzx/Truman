@@ -2,10 +2,9 @@
 #define _DMA_ANALYSIS_H_
 
 #include "dma.h"
-#include "common.h"
-#include "analysis.h"
 
 #include "llvm/IR/InlineAsm.h"
+#include "llvm/IR/Module.h"
 
 #include "device.pb.h"
 using namespace device;
@@ -21,8 +20,8 @@ public:
 	}
 
 	DeviceInfo device_info_;
-	dma_taint_result dma_result_;
-	Module *module_;
+	std::set<llvm::Instruction *> dma_result_;
+	llvm::Module *module_;
 
 	bool runOnModule(llvm::Module &M) override;
 	void getAnalysisUsage(llvm::AnalysisUsage &AU) const override;
