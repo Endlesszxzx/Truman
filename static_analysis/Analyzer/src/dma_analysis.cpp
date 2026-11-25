@@ -23,8 +23,8 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/IRReader/IRReader.h"
 #include "MSSA/SVFGBuilder.h"
-#include "SVF-FE/LLVMModule.h"
-#include "SVF-FE/SVFIRBuilder.h"
+#include "SVF-LLVM/LLVMModule.h"
+#include "SVF-LLVM/SVFIRBuilder.h"
 #include "WPA/Andersen.h"
 #include "yaml-cpp/emitter.h"
 #include "yaml-cpp/emittermanip.h"
@@ -767,19 +767,13 @@ bool DMAAnalysisPass::AnalyzeIOBar(llvm::Function *func) {
 			
 			found = true;
 		} else if (auto *store_inst = llvm::dyn_cast<llvm::StoreInst>(&*I)) {
-			auto *operand_type = store_inst->getValueOperand()->getType();
-			if (operand_type->isPointerTy()) {
-				operand_type = operand_type->getPointerElementType();
-				if (operand_type->isFunctionTy()) {
-					auto *probe_work = llvm::dyn_cast<llvm::Function>(store_inst->getValueOperand());
-					if (probe_work && !probe_work->isDeclaration() &&
-							probe_work->getName().str().find("probe") != std::string::npos) {
-						device_info_.probe_func.insert(probe_work);
-						bool found = AnalyzeIOBar(probe_work);
-						if (found) {
-							return found;
-						}
-					}
+			auto *probe_work = llvm::dyn_cast<llvm::Function>(store_inst->getValueOperand());
+			if (probe_work && !probe_work->isDeclaration() &&
+					probe_work->getName().str().find("probe") != std::string::npos) {
+				device_info_.probe_func.insert(probe_work);
+				bool found = AnalyzeIOBar(probe_work);
+				if (found) {
+					return found;
 				}
 			}
 		}
@@ -799,7 +793,7 @@ bool DMAAnalysisPass::GetBytes(const SVF::VFGNode *vfg_node, uint64_t offset,
 	device_info_.visited_nodes.insert(vfg_node);
 
 	bool result;
-	auto *value = vfg_node->getValue();
+	auto *value = device_info_.svf_module_set->getLLVMValue(vfg_node->getValue());
 	if (!value) {
 		return false;
 	}
@@ -827,7 +821,7 @@ bool DMAAnalysisPass::GetBytes(const SVF::VFGNode *vfg_node, uint64_t offset,
 
 bool DMAAnalysisPass::GetIOInfo(const llvm::Value *val, std::set<uint64_t> &bytes) {
 	auto *pag_node = device_info_.svf_pag->getGNode(
-		device_info_.svf_pag->getValueNode(val));
+		device_info_.svf_pag->getValueNode(device_info_.svf_module_set->getSVFValue(val)));
 	auto *vfg_node = device_info_.svf_vfg->getDefVFGNode(pag_node);
 
 	device_info_.visited_nodes.clear();
@@ -900,9 +894,7 @@ llvm::Type* DMAAnalysisPass::GV2Type(llvm::GlobalVariable *global_variable) {
 
 bool DMAAnalysisPass::AnalyzeEntries() {
 	llvm::Module *bc;
-	auto &global_list = module_->getGlobalList();
-
-    for (auto &global : global_list) {
+	for (auto &global : module_->globals()) {
 		auto global_name = global.getName().str();
 		if (global_name.find("ops") != global_name.npos ||
 				global_name.find("hc_driver") != global_name.npos ||
@@ -1298,9 +1290,7 @@ llvm::Function* DMAAnalysisPass::FindPCIProbe() {
 
 llvm::ConstantStruct *DMAAnalysisPass::FindDriver() {
     llvm::ConstantStruct *driver_struct = NULL;
-    auto &global_list = module_->getGlobalList();
-
-    for (auto &global : global_list) {
+    for (auto &global : module_->globals()) {
         auto *actualType = GV2Type(&global);
 		if (!actualType) {
 			continue;
@@ -1387,13 +1377,15 @@ IntraDepNodePtr DMAAnalysisPass::GetRegValue(llvm::Value *value) {
         root->value = constant_int->getZExtValue();
 		insert_flag = false;
 	} else if (auto *argument = llvm::dyn_cast<llvm::Argument>(source)) {
-        root->node_value_type = IntraDepNodeValueType::k_NODE_VALUE_ARG;
-		auto *pag_node = device_info_.svf_pag->getGNode(device_info_.svf_pag->getValueNode(source));
+		root->node_value_type = IntraDepNodeValueType::k_NODE_VALUE_ARG;
+		auto *pag_node = device_info_.svf_pag->getGNode(device_info_.svf_pag->getValueNode(
+			device_info_.svf_module_set->getSVFValue(source)));
 		auto *vfg_node = device_info_.svf_vfg->getDefVFGNode(pag_node);
 		std::unordered_set<llvm::Value*> addedValues;
 		std::unordered_set<uint64_t> addedInts;
 		for (auto &in_edge: vfg_node->getInEdges()) {
-			auto *val = const_cast<llvm::Value*>(in_edge->getSrcNode()->getValue());
+			auto *val = const_cast<llvm::Value*>(device_info_.svf_module_set->getLLVMValue(
+				in_edge->getSrcNode()->getValue()));
 			node_ptr = GetRegValue(val);
 			root->addChild(std::move(node_ptr));
 		}
@@ -1504,7 +1496,7 @@ uint64_t DMAAnalysisPass::GetValue(llvm::Value *value) {
 		if (!pag_node->hasValue()) {
 			return val;
 		}
-		auto *node_value = pag_node->getValue();
+		auto *node_value = device_info_.svf_module_set->getLLVMValue(pag_node->getValue());
 		for (auto user: node_value->users()) {
 			auto *store_inst = llvm::dyn_cast<llvm::StoreInst>(user);
 			if (!store_inst) {
@@ -1553,10 +1545,11 @@ uint64_t DMAAnalysisPass::MatchIO(const llvm::Value *val, struct IOInfo &target_
 
 const llvm::Value* DMAAnalysisPass::GetOffset(llvm::Value *val, std::set<uint64_t> &reg, bool is_io) {
 	auto *pag_node = device_info_.svf_pag->getGNode(
-	device_info_.svf_pag->getValueNode(val));
+	device_info_.svf_pag->getValueNode(device_info_.svf_module_set->getSVFValue(val)));
 	auto *vfg_node = device_info_.svf_vfg->getDefVFGNode(pag_node);
 	auto *curr_node = vfg_node;
-	auto *curr_value = device_info_.svf_vfg->getLHSTopLevPtr(curr_node)->getValue();
+	auto *curr_value = device_info_.svf_module_set->getLLVMValue(
+		device_info_.svf_vfg->getLHSTopLevPtr(curr_node)->getValue());
 	uint64_t depth = 0;
 	SVF::FILOWorkList<const SVF::VFGNode *> work_list;
 	work_list.push(vfg_node);
@@ -1570,7 +1563,7 @@ const llvm::Value* DMAAnalysisPass::GetOffset(llvm::Value *val, std::set<uint64_
 		if (!pag_node->hasValue()) {
 			break;
 		}
-		curr_value = pag_node->getValue();
+		curr_value = device_info_.svf_module_set->getLLVMValue(pag_node->getValue());
 		auto *add_inst = llvm::dyn_cast<llvm::BinaryOperator>(curr_value);
 		auto *gep_inst = llvm::dyn_cast<llvm::GetElementPtrInst>(curr_value);
 		if (is_io && add_inst && add_inst->getOpcode() == llvm::Instruction::BinaryOps::Add) {
@@ -1713,7 +1706,7 @@ bool DMAAnalysisPass::ExtractInt(const llvm::GetElementPtrInst *gep_inst,
 
 const llvm::Value* DMAAnalysisPass::FindSource(const llvm::Value *val, std::stack<const SVF::VFGNode *> &vfg_stack) {
 	auto *pag_node = device_info_.svf_pag->getGNode(
-			device_info_.svf_pag->getValueNode(val));
+			device_info_.svf_pag->getValueNode(device_info_.svf_module_set->getSVFValue(val)));
 	auto *vfg_node = device_info_.svf_vfg->getDefVFGNode(pag_node);
 	auto *curr_node = vfg_node;
 	uint64_t depth = 0;
@@ -1729,8 +1722,8 @@ const llvm::Value* DMAAnalysisPass::FindSource(const llvm::Value *val, std::stac
 			if (!pag_node->hasValue()) {
 				break;
 			}
-			auto *svf_val = pag_node->getValue();
-			return svf_val;
+			auto *llvm_value = device_info_.svf_module_set->getLLVMValue(pag_node->getValue());
+			return llvm_value;
 		} else {
 			auto *in_edge = *curr_node->InEdgeBegin();
 			curr_node = in_edge->getSrcNode();
@@ -1758,7 +1751,6 @@ void DMAAnalysisPass::GetAliasPointers(llvm::Value *val,
 void DMAAnalysisPass::PreProcess() {
 	device_info_.svf_module_set = SVF::LLVMModuleSet::getLLVMModuleSet();
 	device_info_.svf_module = device_info_.svf_module_set->buildSVFModule(*device_info_.bc_module);
-	device_info_.svf_module->buildSymbolTableInfo();
 	SVF::SVFIRBuilder builder(device_info_.svf_module);
 	device_info_.svf_pag = builder.build();
 	device_info_.svf_ander = SVF::AndersenWaveDiff::createAndersenWaveDiff(device_info_.svf_pag);

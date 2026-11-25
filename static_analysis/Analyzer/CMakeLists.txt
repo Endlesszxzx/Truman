@@ -60,14 +60,18 @@ set(DBM_SRCS
 )
 add_library(AnalyzerDBM MODULE ${DBM_SRCS} ${PROTO_SRCS})
 target_link_libraries(AnalyzerDBM
-    ${SVF_LIB}
+	${SVF_LIBRARIES}
+	${TRUMAN_LLVM_LIBRARIES}
     spdlog::spdlog
     yaml-cpp::yaml-cpp
     ${Z3_LIB}
     protobuf::libprotobuf
 )
 target_compile_features(AnalyzerDBM PRIVATE cxx_std_17)
-set_target_properties(AnalyzerDBM PROPERTIES COMPILE_FLAGS "-g -fno-rtti")
+target_compile_options(AnalyzerDBM PRIVATE -g)
+if(NOT LLVM_ENABLE_RTTI)
+	target_compile_options(AnalyzerDBM PRIVATE -fno-rtti)
+endif()
 
 # Add libraries
 add_library(Analyzer MODULE ${SAA_SRCS} ${PROTO_SRCS})
@@ -75,7 +79,8 @@ add_library(AnalyzerStatic STATIC ${SAA_SRCS} ${PROTO_SRCS})
 
 # Link libraries
 target_link_libraries(Analyzer 
-    ${SVF_LIB} 
+	${SVF_LIBRARIES}
+	${TRUMAN_LLVM_LIBRARIES}
     spdlog::spdlog 
     yaml-cpp::yaml-cpp 
     ${Z3_LIB} 
@@ -87,7 +92,8 @@ target_link_libraries(Analyzer
 )
 
 target_link_libraries(AnalyzerStatic 
-    ${SVF_LIB} 
+	${SVF_LIBRARIES}
+	${TRUMAN_LLVM_LIBRARIES}
     spdlog::spdlog 
     yaml-cpp::yaml-cpp 
     ${Z3_LIB} 

@@ -14,12 +14,39 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 	set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DSPDLOG_ACTIVE_LEVEL=1")
 endif()
 
-find_package(LLVM 13 REQUIRED CONFIG PATHS ${LLVM_DIR})
+find_package(LLVM 17.0.6 EXACT REQUIRED CONFIG PATHS ${LLVM_DIR})
 add_definitions(${LLVM_DEFINITIONS})
 include_directories(${LLVM_INCLUDE_DIRS} ${PROJECT_SOURCE_DIR}/include)
-include_directories(SYSTEM ${SVF_SOURCE_DIR}/include)
+
+if(NOT SVF_SOURCE_DIR OR NOT SVF_BUILD_DIR)
+	message(FATAL_ERROR "SVF_SOURCE_DIR and SVF_BUILD_DIR must point to the checked-out SVF source and its LLVM 17 build directory")
+endif()
+if(NOT EXISTS "${SVF_SOURCE_DIR}/svf/include/WPA/Andersen.h" OR
+		NOT EXISTS "${SVF_SOURCE_DIR}/svf-llvm/include/SVF-LLVM/SVFIRBuilder.h")
+	message(FATAL_ERROR "SVF_SOURCE_DIR does not contain the SVF Core/SVF-LLVM source layout")
+endif()
+
+set(SVF_LIBRARIES
+	"${SVF_BUILD_DIR}/lib/libSvfLLVM.a"
+	"${SVF_BUILD_DIR}/lib/libSvfCore.a"
+)
+foreach(SVF_LIBRARY IN LISTS SVF_LIBRARIES)
+	if(NOT EXISTS "${SVF_LIBRARY}")
+		message(FATAL_ERROR "Missing SVF library: ${SVF_LIBRARY}")
+	endif()
+endforeach()
+
+include_directories(SYSTEM
+	${SVF_SOURCE_DIR}/svf/include
+	${SVF_SOURCE_DIR}/svf-llvm/include
+	${SVF_BUILD_DIR}/include
+)
 link_directories(${LLVM_LIBRARY_DIRS})
-llvm_map_components_to_libnames(llvm_libs core ipo irreader support)
+if(LLVM_LINK_LLVM_DYLIB)
+	set(TRUMAN_LLVM_LIBRARIES LLVM)
+else()
+	llvm_map_components_to_libnames(TRUMAN_LLVM_LIBRARIES core ipo irreader support)
+endif()
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 

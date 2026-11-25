@@ -1,5 +1,5 @@
 #include "dma.h"
-#include "SVF-FE/LLVMModule.h"
+#include "SVF-LLVM/LLVMModule.h"
 #include "WPA/Andersen.h"
 #include "common.h"
 #include "llvm/IR/Instructions.h"
@@ -20,9 +20,7 @@ llvm::Type* DMAPass::GV2Type(llvm::GlobalVariable *global_variable) {
 
 llvm::ConstantStruct *DMAPass::FindDriver(llvm::Module *module) {
 	llvm::ConstantStruct *driver_struct = NULL;
-	auto &global_list = module->getGlobalList();
-
-	for (auto &global : global_list) {
+	for (auto &global : module->globals()) {
 		auto *actualType = GV2Type(&global);
 		if (!actualType) {
 			continue;
@@ -104,9 +102,7 @@ bool DMAPass::AnalyzeEntries(llvm::GlobalVariable *global) {
 }
 
 bool DMAPass::AnalyzeEntries() {
-	auto &global_list = module_->getGlobalList();
-
-    for (auto &global : global_list) {
+	for (auto &global : module_->globals()) {
 		auto global_name = global.getName().str();
 		if (global_name.find("ops") != global_name.npos ||
 				global_name.find("hc_driver") != global_name.npos ||
@@ -172,7 +168,7 @@ bool DMAPass::GetBytes(const SVF::VFGNode *vfg_node, uint64_t offset,
 	device_info_.visited_nodes.insert(vfg_node);
 
 	bool result;
-	auto *value = vfg_node->getValue();
+	auto *value = device_info_.svf_module_set->getLLVMValue(vfg_node->getValue());
 	if (!value) {
 		return false;
 	}
@@ -200,7 +196,7 @@ bool DMAPass::GetBytes(const SVF::VFGNode *vfg_node, uint64_t offset,
 
 bool DMAPass::GetIOInfo(const llvm::Value *val, std::set<uint64_t> &bytes) {
 	auto *pag_node = device_info_.svf_pag->getGNode(
-		device_info_.svf_pag->getValueNode(val));
+		device_info_.svf_pag->getValueNode(device_info_.svf_module_set->getSVFValue(val)));
 	auto *vfg_node = device_info_.svf_vfg->getDefVFGNode(pag_node);
 
 	device_info_.visited_nodes.clear();
@@ -440,7 +436,6 @@ bool DMAPass::AnalyzeDMAAccess(llvm::Function *func) {
 void DMAPass::PreProcess() {
 	device_info_.svf_module_set = SVF::LLVMModuleSet::getLLVMModuleSet();
 	device_info_.svf_module = device_info_.svf_module_set->buildSVFModule(*device_info_.bc_module);
-	device_info_.svf_module->buildSymbolTableInfo();
 	SVF::SVFIRBuilder builder(device_info_.svf_module);
 	device_info_.svf_pag = builder.build();
 	device_info_.svf_ander = SVF::AndersenWaveDiff::createAndersenWaveDiff(device_info_.svf_pag);
@@ -515,7 +510,7 @@ void DMAPass::DetectAliasPointers(llvm::Function *func,
 		} else if (auto *store_inst = llvm::dyn_cast<llvm::StoreInst>(I)) {
 			addr_set.insert(store_inst->getPointerOperand());
 		} else if (auto *call_inst = llvm::dyn_cast<llvm::CallInst>(I)) {
-			for (unsigned j = 0; j < call_inst->getNumArgOperands(); ++j) {
+			for (unsigned j = 0; j < call_inst->arg_size(); ++j) {
 				auto *arg = call_inst->getArgOperand(j);
 				if (!arg->getType()->isPointerTy()) {
 					continue;
