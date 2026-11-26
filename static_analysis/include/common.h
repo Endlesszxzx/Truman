@@ -439,6 +439,8 @@ struct IOInfo {
 	std::vector<uint64_t> offset;
 	std::set<uint64_t> bytes;
 	std::set<const llvm::Value *> var;
+	bool bar_index_dynamic = false;
+	std::string bar_index_expression;
 };
 
 struct DeviceInfo {

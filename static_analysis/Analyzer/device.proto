@@ -81,6 +81,8 @@ message IO {
   string source_type = 3;
   repeated uint64 offset = 4;
   repeated uint64 bytes = 5;
+  bool bar_index_dynamic = 6;
+  string bar_index_expression = 7;
 }
 
 enum DMAType {

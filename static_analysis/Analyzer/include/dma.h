@@ -68,4 +68,6 @@ public:
 	void getAnalysisUsage(llvm::AnalysisUsage &AU) const override;
 };
 
+unsigned GetPCIDriverLayoutOffset(const llvm::ConstantStruct *driver_struct);
+
 #endif

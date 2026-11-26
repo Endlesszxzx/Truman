@@ -17,6 +17,21 @@ llvm::Type* DMAPass::GV2Type(llvm::GlobalVariable *global_variable) {
 
 	return actual_type;
 }
+//避免较新版本linux内核结构和之前不一致 首先检查首字段是不是 struct.list_head
+unsigned GetPCIDriverLayoutOffset(const llvm::ConstantStruct *driver_struct) {
+	if (!driver_struct || driver_struct->getType()->getNumElements() == 0) {
+		return 0;
+	}
+
+	auto *first_member_type = driver_struct->getType()->getElementType(0);
+	auto *first_member_struct = llvm::dyn_cast<llvm::StructType>(first_member_type);
+	if (first_member_struct && first_member_struct->hasName() &&
+			first_member_struct->getName() == "struct.list_head") {
+		return 1;
+	}
+
+	return 0;
+}
 
 llvm::ConstantStruct *DMAPass::FindDriver(llvm::Module *module) {
 	llvm::ConstantStruct *driver_struct = NULL;
@@ -62,7 +77,8 @@ llvm::Function *DMAPass::FindPCIProbe(llvm::Module *M) {
 	}
 	int func_pos = -1;
 	if (device_info_.device_type == k_PCI) {
-		func_pos = 3;
+		// Linux 6.6 has a leading pci_driver.node; Linux 7.3 removed it.
+		func_pos = 2 + GetPCIDriverLayoutOffset(driver_struct);
 	} else if (device_info_.device_type == k_PLATFORM) {
 		func_pos = 0;
 	}

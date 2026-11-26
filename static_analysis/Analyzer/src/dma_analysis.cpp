@@ -1,5 +1,7 @@
 #include "dma_analysis.h"
 
+#include <algorithm>
+#include <cctype>
 #include <mutex>
 #include <filesystem>
 #include <regex>
@@ -11,11 +13,13 @@
 #include <fstream>
 #include <iostream>
 #include <cassert>
+#include <functional>
 
 #include <google/protobuf/util/json_util.h>
 #include <google/protobuf/text_format.h>
 
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/Support/Debug.h"
@@ -34,6 +38,78 @@
 #include "spdlog/sinks/stdout_color_sinks.h" // Support for logging to terminal with colors
 
 namespace DRCHECKER {
+
+namespace {
+
+bool IsZeroIndexedGEP(const llvm::GetElementPtrInst *gep_inst) {
+	for (const llvm::Use &index : gep_inst->indices()) {
+		auto *constant_index = llvm::dyn_cast<llvm::ConstantInt>(index.get());
+		if (!constant_index || !constant_index->isZero()) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool ReachesResourceStartLoad(const llvm::Value *value, llvm::Type *start_type,
+		llvm::SmallPtrSetImpl<const llvm::Value *> &visited) {
+	if (!visited.insert(value).second) {
+		return false;
+	}
+
+	for (const auto *user : value->users()) {
+		if (const auto *load_inst = llvm::dyn_cast<llvm::LoadInst>(user)) {
+			if (load_inst->getPointerOperand() == value &&
+					load_inst->getType() == start_type) {
+				return true;
+			}
+		} else if (const auto *gep_inst =
+				llvm::dyn_cast<llvm::GetElementPtrInst>(user)) {
+			if (gep_inst->getPointerOperand() == value &&
+					IsZeroIndexedGEP(gep_inst) &&
+					ReachesResourceStartLoad(gep_inst, start_type, visited)) {
+				return true;
+			}
+		} else if (const auto *cast_inst = llvm::dyn_cast<llvm::CastInst>(user)) {
+			if (cast_inst->getOperand(0) == value &&
+					cast_inst->getType()->isPointerTy() &&
+					ReachesResourceStartLoad(cast_inst, start_type, visited)) {
+				return true;
+			}
+		} else if (const auto *phi_inst = llvm::dyn_cast<llvm::PHINode>(user)) {
+			if (phi_inst->getType()->isPointerTy() &&
+					ReachesResourceStartLoad(phi_inst, start_type, visited)) {
+				return true;
+			}
+		} else if (const auto *select_inst = llvm::dyn_cast<llvm::SelectInst>(user)) {
+			if (select_inst->getType()->isPointerTy() &&
+					ReachesResourceStartLoad(select_inst, start_type, visited)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+std::string DescribeRuntimeIndex(const llvm::Value *value) {
+	std::string expression;
+	llvm::raw_string_ostream stream(expression);
+	if (const auto *argument = llvm::dyn_cast<llvm::Argument>(value)) {
+		stream << argument->getParent()->getName() << "::arg" << argument->getArgNo();
+		if (argument->hasName()) {
+			stream << "(%" << argument->getName() << ")";
+		}
+	} else if (const auto *instruction = llvm::dyn_cast<llvm::Instruction>(value)) {
+		stream << instruction->getFunction()->getName() << "::";
+		instruction->print(stream);
+	} else {
+		value->print(stream);
+	}
+	stream.flush();
+	return expression;
+}
+
+}  // namespace
 
 const int MAX_RING_CNT = 8;
 
@@ -752,17 +828,93 @@ bool DMAAnalysisPass::AnalyzeIOBar(llvm::Function *func) {
 			if (source_type_name.compare("struct.pci_dev")) {
 				continue;
 			}
+			auto *pci_dev_type = llvm::dyn_cast<llvm::StructType>(source_type);
+			unsigned resource_array_index = 0;
+			bool has_resource_array = false;
+			// 按元素类型定位 resource[]，避免依赖受 Kconfig 影响的字段序号
+			for (unsigned member_index = 0;
+					member_index < pci_dev_type->getNumElements(); ++member_index) {
+				auto *array_type = llvm::dyn_cast<llvm::ArrayType>(
+					pci_dev_type->getElementType(member_index));
+				if (!array_type) {
+					continue;
+				}
+				auto *resource_type = llvm::dyn_cast<llvm::StructType>(
+					array_type->getElementType());
+				if (resource_type && resource_type->hasName() &&
+						resource_type->getName() == "struct.resource") {
+					resource_array_index = member_index;
+					has_resource_array = true;
+					break;
+				}
+			}
+			if (!has_resource_array) {
+				continue;
+			}
 
-			std::vector<uint64_t> offset;
-			ExtractInt(gep_inst, offset);
+			llvm::SmallVector<llvm::Value *, 4> indices;
+			for (llvm::Use &index : gep_inst->indices()) {
+				indices.push_back(index.get());
+			}
+			if (indices.size() != 3 && indices.size() != 4) {
+				continue;
+			}
+			auto *first_index = llvm::dyn_cast<llvm::ConstantInt>(indices[0]);
+			auto *resource_index = llvm::dyn_cast<llvm::ConstantInt>(indices[1]);
+			if (!first_index || !first_index->isZero() || !resource_index ||
+					resource_index->getZExtValue() != resource_array_index) {
+				continue;
+			}
+			if (indices.size() == 4) {
+				auto *start_index = llvm::dyn_cast<llvm::ConstantInt>(indices[3]);
+				if (!start_index || !start_index->isZero()) {
+					continue;
+				}
+			} else {
+				// 三项 GEP 只指向 resource[bar]；确认它确实流向 start 字段读取，
+				// 不把仅用于 resource_size() 或 flags 查询的指针登记为起始地址。
+				auto *resource_array = llvm::cast<llvm::ArrayType>(
+					pci_dev_type->getElementType(resource_array_index));
+				auto *resource_type = llvm::cast<llvm::StructType>(
+					resource_array->getElementType());
+				if (resource_type->getNumElements() == 0) {
+					continue;
+				}
+				llvm::SmallPtrSet<const llvm::Value *, 16> visited;
+				if (!ReachesResourceStartLoad(gep_inst,
+						resource_type->getElementType(0), visited)) {
+					continue;
+				}
+			}
 
-			// heuristic rule
-			if (offset.size() != 4 || offset[0] != 0 || offset[1] != 51 || offset[3] != 0) {
+			// BAR 子索引可能是运行时值，不能用 GetValue() 的未知值哨兵代替。
+			std::vector<uint64_t> offset{0, resource_array_index};
+			bool bar_index_dynamic = false;
+			std::string bar_index_expression;
+			if (auto *bar_index = llvm::dyn_cast<llvm::ConstantInt>(indices[2])) {
+				offset.push_back(bar_index->getZExtValue());
+			} else {
+				bar_index_dynamic = true;
+				bar_index_expression = DescribeRuntimeIndex(indices[2]);
+			}
+
+			auto duplicate = std::find_if(device_info_.io_info.begin(),
+				device_info_.io_info.end(), [&](const IOInfo &existing) {
+					return !existing.is_mmio &&
+						existing.device_type == source_type_name &&
+						existing.offset == offset &&
+						existing.bar_index_dynamic == bar_index_dynamic &&
+						existing.bar_index_expression == bar_index_expression;
+				});
+			if (duplicate != device_info_.io_info.end()) {
 				continue;
 			}
 
 			std::set<uint64_t> reg;
-			struct IOInfo p_io_info{device_info_.io_region_num++, false, source_type_name, offset, reg};
+			struct IOInfo p_io_info{device_info_.io_region_num++, false,
+				source_type_name, offset, reg};
+			p_io_info.bar_index_dynamic = bar_index_dynamic;
+			p_io_info.bar_index_expression = bar_index_expression;
 			device_info_.io_info.push_back(p_io_info);
 			
 			found = true;
@@ -927,6 +1079,31 @@ bool DMAAnalysisPass::AnalyzeEntries() {
 
 struct CalleeOrOp DMAAnalysisPass::AnalyzeCall(llvm::CallInst *call_inst) {
 	struct CalleeOrOp callee_or_op;
+	auto matches_access_name = [](const std::string &name, const std::string &api) {
+		std::string candidate = name;
+		if (candidate.rfind("__raw_", 0) == 0) {
+			candidate.erase(0, 6);
+		}
+		if (candidate.rfind(api, 0) != 0) {
+			return false;
+		}
+		if (candidate.size() == api.size()) {
+			return true;
+		}
+
+		const auto suffix = candidate.substr(api.size());
+		if (suffix[0] == '_') {
+			return true;
+		}
+		if (suffix[0] == '.' && suffix.size() > 1 &&
+				std::all_of(suffix.begin() + 1, suffix.end(), [](unsigned char c) {
+					return std::isdigit(c);
+				})) {
+			return true;
+		}
+		return (api.rfind("iowrite", 0) == 0 || api.rfind("ioread", 0) == 0) &&
+			suffix.rfind("be", 0) == 0;
+	};
 
 	if (call_inst->isIndirectCall()) {
 		SPDLOG_WARN("Cannot handle indirect call {}.\n", LLVMPrint(call_inst));
@@ -1016,7 +1193,7 @@ struct CalleeOrOp DMAAnalysisPass::AnalyzeCall(llvm::CallInst *call_inst) {
 	}
 
 	for (auto &rw_func : default_rw_funcs) {
-		if (called_func_name.find(std::get<0>(rw_func)) == std::string::npos) {
+		if (!matches_access_name(called_func_name, std::get<0>(rw_func))) {
 			continue;
 		}
 
@@ -1186,7 +1363,7 @@ std::set<PathInfo> DMAAnalysisPass::AnalyzePath(llvm::BasicBlock *bb,
 	auto num_of_successors = terminator->getNumSuccessors();
 	for (int i = 0; i < num_of_successors; ++i) {
 		auto successor = terminator->getSuccessor(i);
-		bool bb_in_path = (path_info.find(std::to_string(device_info_.bb_num_map[successor])) != path_info.npos);
+		bool bb_in_path = (path_info == std::to_string(device_info_.bb_num_map[successor]) + " ");
 		if (!bb_in_path) {
 			auto succ_path_info_set = AnalyzePath(successor, bb_set);
 			for (auto &succ_path_info: succ_path_info_set) {
@@ -1255,7 +1432,8 @@ llvm::Function* DMAAnalysisPass::FindPCIProbe() {
 	}
 	int func_pos = -1;
 	if (device_info_.device_type == k_PCI) {
-		func_pos = 3;
+		// Linux 6.6 has a leading pci_driver.node; Linux 7.3 removed it.
+		func_pos = 2 + GetPCIDriverLayoutOffset(driver_struct);
 	} else if (device_info_.device_type == k_PLATFORM) {
 		func_pos = 0;
 	}
@@ -1264,16 +1442,18 @@ llvm::Function* DMAAnalysisPass::FindPCIProbe() {
 		probe_func = llvm::dyn_cast<llvm::Function>(driver_struct->getAggregateElement(func_pos));
 	}
 	assert(probe_func);
-	for (int i = 3; i <= 7; ++i) {
+	for (int i = func_pos; i <= func_pos + 4; ++i) {
 		auto *func = llvm::dyn_cast<llvm::Function>(driver_struct->getAggregateElement(i));
 		if (func) {
 			device_info_.state_func.insert(func);
 		}
 	}
-	if (driver_struct->getNumOperands() > 14) {
-		auto *device_driver = llvm::dyn_cast<llvm::ConstantStruct>(driver_struct->getAggregateElement(14));
+	// The same optional node shifts the embedded device_driver field by one.
+	int device_driver_index = 13 + GetPCIDriverLayoutOffset(driver_struct);
+	if (driver_struct->getNumOperands() > device_driver_index) {
+		auto *device_driver = llvm::dyn_cast<llvm::ConstantStruct>(
+			driver_struct->getAggregateElement(device_driver_index));
 		if (device_driver) {
-			device_driver->getAggregateElement(16);
 			auto *pm_constant = llvm::dyn_cast<llvm::Constant>(device_driver->getAggregateElement(16));
 			auto *pm_struct = llvm::dyn_cast<llvm::ConstantStruct>(pm_constant->getOperand(0));
 			if (pm_struct) {
@@ -1801,7 +1981,9 @@ void DMAAnalysisPass::WriteResult() {
 
     // JSON format
     std::string jsonOutput;
-    google::protobuf::util::MessageToJsonString(protoDevice, &jsonOutput);
+	google::protobuf::util::JsonPrintOptions jsonOptions;
+	jsonOptions.add_whitespace = true;
+	google::protobuf::util::MessageToJsonString(protoDevice, &jsonOutput, jsonOptions);
 	writeToFile(json_path.string(), jsonOutput);
 }
 
@@ -1838,6 +2020,10 @@ void DMAAnalysisPass::serializeIO(const IOInfo& io, device::IO* protoIO) {
     for (auto bytes : io.bytes) {
         protoIO->add_bytes(bytes);
     }
+	protoIO->set_bar_index_dynamic(io.bar_index_dynamic);
+	if (!io.bar_index_expression.empty()) {
+		protoIO->set_bar_index_expression(io.bar_index_expression);
+	}
 }
 
 void DMAAnalysisPass::serializeBasicBlocks(const DeviceInfo& device_info, google::protobuf::Map<std::string, std::string>* protoBBs) {
