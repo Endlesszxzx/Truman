@@ -171,6 +171,17 @@ log.txt
 *.lck/
 *.scoreboard
 
+# Local IDE settings and one-off e1000 validation artifacts
+/.idea/
+/.run/
+/e1000_screenshots.zip
+/page40_dbm_compare_report.png
+/docs/8086-100f_EEPROM读取与probe验证_2026-11-18.md
+/docs/Truman与DevGen研究方向及e1000证据分析_2026-11-17.md
+/docs/devgen-local-source-review.txt
+/docs/driver-validation.txt
+/docs/e1000-devgen-study.txt
+
 vmware/
 vbox/
 compile_commands.json

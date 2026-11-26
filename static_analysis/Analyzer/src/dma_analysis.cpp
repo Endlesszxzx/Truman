@@ -1171,7 +1171,9 @@ std::set<PathInfo> DMAAnalysisPass::AnalyzePath(llvm::BasicBlock *bb,
 	bb_set.insert(bb);
 
 	if (device_info_.bb_path_map.find(bb) != device_info_.bb_path_map.end()) {
-		return device_info_.bb_path_map[bb];
+		auto cached_paths = device_info_.bb_path_map[bb];
+		bb_set.erase(bb);
+		return cached_paths;
 	}
 
 	PathInfo path_info;
@@ -1776,14 +1778,13 @@ void DMAAnalysisPass::WriteResult() {
 	// result.close();
 	//
 	std::filesystem::path bin_path(result_bin.getValue());
-    std::filesystem::path parent_dir = bin_path.parent_path();
-
-    // Extract the filename without extension
-    std::string filename = result_bin;
-
-    // Create filenames for text and JSON by replacing "bin" with "txt" and "json"
-    std::filesystem::path text_filename = parent_dir / (filename.replace(filename.find("bin"), 3, "txt"));
-    std::filesystem::path json_filename = parent_dir / (filename.replace(filename.find("txt"), 3, "json"));
+	std::filesystem::path text_path = bin_path;
+	text_path.replace_extension(".txt");
+	std::filesystem::path json_path = bin_path;
+	json_path.replace_extension(".json");
+	if (!bin_path.parent_path().empty()) {
+		std::filesystem::create_directories(bin_path.parent_path());
+	}
 
 	Device protoDevice;
     serializeDeviceInfo(device_info_, &protoDevice);
@@ -1791,17 +1792,17 @@ void DMAAnalysisPass::WriteResult() {
     // Binary format
     std::string binaryOutput;
     protoDevice.SerializeToString(&binaryOutput);
-    writeToFile(result_bin, binaryOutput);
+	writeToFile(bin_path.string(), binaryOutput);
 
     // Text format
     std::string textOutput;
     google::protobuf::TextFormat::PrintToString(protoDevice, &textOutput);
-    writeToFile(text_filename, textOutput);
+	writeToFile(text_path.string(), textOutput);
 
     // JSON format
     std::string jsonOutput;
     google::protobuf::util::MessageToJsonString(protoDevice, &jsonOutput);
-    writeToFile(json_filename, jsonOutput);
+	writeToFile(json_path.string(), jsonOutput);
 }
 
 void DMAAnalysisPass::serializeIntraDepNode(const IntraDepNodePtr& node, device::IntraDepNode* protoNode) {

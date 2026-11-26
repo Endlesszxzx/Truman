@@ -46,6 +46,7 @@ file(GLOB SAA_SRCS
     "include/bug_detectors/*.h"
     "include/bug_detectors/warnings/*.h"
 )
+list(REMOVE_ITEM SAA_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/src/AnalyzerDBMPlugin.cpp")
 
 # Message for debugging
 message(STATUS "Source files: ${SAA_SRCS}")
@@ -54,6 +55,7 @@ message(STATUS "Source files: ${SAA_SRCS}")
 # The DBM pass consumes DMAResult directly and does not compile the taint,
 # visitor, or bug-detector implementation.
 set(DBM_SRCS
+	"src/AnalyzerDBMPlugin.cpp"
     "src/DMAResult.cpp"
     "src/dma.cpp"
     "src/dma_analysis.cpp"

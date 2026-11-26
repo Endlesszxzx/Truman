@@ -23,7 +23,9 @@ if(APPLE)
             )
 endif(APPLE)
 
-target_link_libraries(${PROJECT_NAME})
+# Constraint.cpp uses Z3; propagate this dependency after Utils when linking
+# static libraries into the analyzer plugin.
+target_link_libraries(${PROJECT_NAME} PUBLIC ${Z3_LIB})
 
 set(${PROJECT_NAME}_INCLUDE_DIRS include
         CACHE INTERNAL "${PROJECT_NAME}: Include Directories" FORCE)
