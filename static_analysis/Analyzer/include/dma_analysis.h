@@ -217,6 +217,7 @@ public:
 		"pci_iomap_wc",
 		"pcim_iomap",
 		"pcim_iomap_table",
+		"pcim_iomap_region",
 		"vp_modern_map_capability",
 	};
 	const std::vector<std::string> default_ops = {

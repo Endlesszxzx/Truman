@@ -782,10 +782,7 @@ bool DMAAnalysisPass::AnalyzeIOBar(llvm::Function *func) {
 				}
 			}
 			if (!black && !called_func->isDeclaration()) {
-				bool found = AnalyzeIOBar(called_func);
-				if (found) {
-					return found;
-				}
+				found = AnalyzeIOBar(called_func) || found;
 			}
 
 			for (auto &func: mmio_mapping_funcs) { // iomap related functions
@@ -818,6 +815,30 @@ bool DMAAnalysisPass::AnalyzeIOBar(llvm::Function *func) {
 
 				found = true;
 				break;
+			}
+
+			// Comedi PCI 探测过程通过此外部辅助函数，将设备特定的初始化工作交由
+			// comedi_driver.auto_attach 回调函数来处理追踪该回调函数，因为实际的 BAR 访问操作在这个里面
+			if (called_func_name == "comedi_pci_auto_config" &&
+					call_inst->arg_size() > 1) {
+				auto *driver_global = llvm::dyn_cast<llvm::GlobalVariable>(
+					call_inst->getArgOperand(1)->stripPointerCasts());
+				if (driver_global && driver_global->hasInitializer()) {
+					const auto *initializer = driver_global->getInitializer();
+					for (const llvm::Use &operand : initializer->operands()) {
+						auto *callback = llvm::dyn_cast<llvm::Function>(
+							operand.get()->stripPointerCasts());
+						if (!callback || callback->isDeclaration() ||
+								callback->getName().str().find("auto_attach") ==
+									std::string::npos) {
+							continue;
+						}
+						if (AnalyzeIOBar(callback)) {
+							device_info_.probe_func.insert(callback);
+							found = true;
+						}
+					}
+				}
 			}
 		} else if (auto *gep_inst = llvm::dyn_cast<llvm::GetElementPtrInst>(&*I)) {
 			auto *source_type = gep_inst->getSourceElementType();
@@ -856,7 +877,7 @@ bool DMAAnalysisPass::AnalyzeIOBar(llvm::Function *func) {
 			for (llvm::Use &index : gep_inst->indices()) {
 				indices.push_back(index.get());
 			}
-			if (indices.size() != 3 && indices.size() != 4) {
+			if (indices.size() < 2 || indices.size() > 4) {
 				continue;
 			}
 			auto *first_index = llvm::dyn_cast<llvm::ConstantInt>(indices[0]);
@@ -865,21 +886,23 @@ bool DMAAnalysisPass::AnalyzeIOBar(llvm::Function *func) {
 					resource_index->getZExtValue() != resource_array_index) {
 				continue;
 			}
+			auto *resource_array = llvm::cast<llvm::ArrayType>(
+				pci_dev_type->getElementType(resource_array_index));
+			auto *resource_type = llvm::cast<llvm::StructType>(
+				resource_array->getElementType());
+			if (resource_type->getNumElements() == 0) {
+				continue;
+			}
+
 			if (indices.size() == 4) {
 				auto *start_index = llvm::dyn_cast<llvm::ConstantInt>(indices[3]);
 				if (!start_index || !start_index->isZero()) {
 					continue;
 				}
 			} else {
-				// 三项 GEP 只指向 resource[bar]；确认它确实流向 start 字段读取，
-				// 不把仅用于 resource_size() 或 flags 查询的指针登记为起始地址。
-				auto *resource_array = llvm::cast<llvm::ArrayType>(
-					pci_dev_type->getElementType(resource_array_index));
-				auto *resource_type = llvm::cast<llvm::StructType>(
-					resource_array->getElementType());
-				if (resource_type->getNumElements() == 0) {
-					continue;
-				}
+				// Two-index GEPs can be Clang's compact form of BAR0.start.
+				// Three-index GEPs point at resource[bar]. In both cases, require
+				// an actual load of resource.start, excluding length/flags-only uses.
 				llvm::SmallPtrSet<const llvm::Value *, 16> visited;
 				if (!ReachesResourceStartLoad(gep_inst,
 						resource_type->getElementType(0), visited)) {
@@ -891,7 +914,10 @@ bool DMAAnalysisPass::AnalyzeIOBar(llvm::Function *func) {
 			std::vector<uint64_t> offset{0, resource_array_index};
 			bool bar_index_dynamic = false;
 			std::string bar_index_expression;
-			if (auto *bar_index = llvm::dyn_cast<llvm::ConstantInt>(indices[2])) {
+			if (indices.size() == 2) {
+				// The compact two-index form addresses resource[0].start.
+				offset.push_back(0);
+			} else if (auto *bar_index = llvm::dyn_cast<llvm::ConstantInt>(indices[2])) {
 				offset.push_back(bar_index->getZExtValue());
 			} else {
 				bar_index_dynamic = true;
@@ -923,10 +949,7 @@ bool DMAAnalysisPass::AnalyzeIOBar(llvm::Function *func) {
 			if (probe_work && !probe_work->isDeclaration() &&
 					probe_work->getName().str().find("probe") != std::string::npos) {
 				device_info_.probe_func.insert(probe_work);
-				bool found = AnalyzeIOBar(probe_work);
-				if (found) {
-					return found;
-				}
+				found = AnalyzeIOBar(probe_work) || found;
 			}
 		}
 	}
