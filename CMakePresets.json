@@ -1,0 +1,41 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "llvm17-dbm",
+      "displayName": "LLVM 17 DBM plugin",
+      "description": "Build the AnalyzerDBM LLVM 17 plugin used to generate driver DBMs.",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/clion-truman-llvm17-dbm",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_COMPILER": "/usr/lib/llvm-17/bin/clang",
+        "CMAKE_CXX_COMPILER": "/usr/lib/llvm-17/bin/clang++",
+        "LLVM_DIR": "/usr/lib/llvm-17/lib/cmake/llvm",
+        "PROTOBUF_DIR": "${sourceDir}/install/analyzer-deps/protobuf",
+        "Protobuf_DIR": "${sourceDir}/install/analyzer-deps/protobuf/lib/cmake/protobuf",
+        "SVF_SOURCE_DIR": "${sourceDir}/third_party/svf",
+        "SVF_BUILD_DIR": "${sourceDir}/build/analyzer-deps/svf-llvm17",
+        "Z3_LIB": "${sourceDir}/static_analysis/z3/bin/libz3.a",
+        "FETCHCONTENT_SOURCE_DIR_SPDLOG": "${sourceDir}/build/analyzer-deps/spdlog-src",
+        "FETCHCONTENT_SOURCE_DIR_YAML-CPP": "${sourceDir}/build/analyzer-deps/yaml-cpp-src"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "analyzer-dbm",
+      "displayName": "Build AnalyzerDBM",
+      "configurePreset": "llvm17-dbm",
+      "targets": [
+        "AnalyzerDBM"
+      ],
+      "jobs": 2
+    }
+  ]
+}
